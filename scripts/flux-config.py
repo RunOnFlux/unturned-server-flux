@@ -36,6 +36,7 @@ VALUE_COMMANDS = [
     ('UNT_OWNER', 'Owner'),
     ('UNT_PERSPECTIVE', 'Perspective'),
     ('UNT_WELCOME', 'Welcome'),
+    ('UNT_MODE', 'Mode'),
     ('FLUX_PORT', 'Port'),
 ]
 # Variable -> a command that is a switch: the line on its own is "on".
@@ -52,6 +53,8 @@ VALID = {
     'GSLT': lambda v: re.fullmatch(r'[0-9A-Fa-f]{32}', v) is not None,
     'Owner': lambda v: re.fullmatch(r'7656\d{13}', v) is not None,
     'Perspective': lambda v: v.lower() in ('first', 'third', 'both', 'vehicle'),
+    # The difficulty: which column of Config.txt's defaults (Easy / Normal / Hard) applies.
+    'Mode': lambda v: v.lower() in ('easy', 'normal', 'hard'),
     'Map': lambda v: len(v) <= 64,
     'Name': lambda v: len(v) <= 50,
     'Password': lambda v: ' ' not in v and len(v) <= 64,

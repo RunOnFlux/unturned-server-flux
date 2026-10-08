@@ -37,6 +37,7 @@ marketplace sells:
 | `UNT_PVE` | | `true`: the `PvE` line (no player damage); `false` removes it |
 | `UNT_CHEATS` | | `true`: the `Cheats` line (admins can spawn items); `false` removes it |
 | `UNT_WELCOME` | | `Welcome`: the message shown on join |
+| `UNT_MODE` | | `Mode`: Easy, Normal or Hard, the difficulty whose defaults `Config.txt` falls back to (the server's own default is Normal) |
 | `UNT_WORKSHOP_IDS` | | Comma-separated Workshop file IDs, written into `WorkshopDownloadConfig.json`'s `File_IDs`; the server downloads them and their dependencies on start |
 | `FLUX_PORT` | `27015` | The FIRST of the two UDP ports the server uses (server list queries); the game uses the next one |
 | `FLUX_SERVER_ID` | `Default` | The server's folder under `Servers/` |
@@ -105,4 +106,5 @@ between a bad build and every server.
 
 ## Versions
 
+- **1.1.0** (2026-10-08): `UNT_MODE` (the `Mode` command: Easy, Normal or Hard).
 - **1.0.0** (2026-10-08): first release.

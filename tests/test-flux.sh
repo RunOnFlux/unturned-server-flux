@@ -80,6 +80,12 @@ check "and each is reported" "4" "$(grep -c '^WARN' <<<"${out}")"
 cfg UNT_NAME=$'Two\nLines' commands "${dat}" >/dev/null
 check "a value is one line" $'MaxPlayers 10\nName Two Lines' "$(cat "${dat}")"
 
+printf '' >"${dat}"
+cfg UNT_MODE=Hard commands "${dat}" >/dev/null
+check "the difficulty is the Mode command" "Mode Hard" "$(cat "${dat}")"
+out="$(cfg UNT_MODE=Insane commands "${dat}")"
+check "an unknown difficulty is not written" "Mode Hard" "$(cat "${dat}")"
+
 check "usage" "64" "$(status python3 scripts/flux-config.py)"
 
 # --- WorkshopDownloadConfig.json ---------------------------------------------------------------
