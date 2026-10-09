@@ -23,6 +23,8 @@ FLUX_STEAM_APP="${FLUX_STEAM_APP:-1110390}"
 # flux-console writes one command into it.
 FLUX_CONSOLE_FIFO="${FLUX_CONSOLE_FIFO:-/tmp/flux-console}"
 FLUX_RESTART_MARKER="${FLUX_RESTART_MARKER:-/tmp/flux-restart-requested}"
+# Held by flux-console for a whole command and its answer, so two answers never mix.
+FLUX_CONSOLE_LOCK="${FLUX_CONSOLE_LOCK:-/tmp/flux-console.lock}"
 # The fingerprint of a login token Steam refused, so the next start leaves it out.
 FLUX_GSLT_REFUSED="${FLUX_GSLT_REFUSED:-${FLUX_DATA_DIR}/flux/gslt-refused}"
 # The world backups (flux-entrypoint.sh backup_world).

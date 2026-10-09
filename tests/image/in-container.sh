@@ -25,7 +25,7 @@ wait_for() {
 }
 
 # --- What the scripts need is in the image -----------------------------------------------------
-for tool in steamcmd python3 pgrep pkill script mkfifo timeout sha256sum tail tee; do
+for tool in steamcmd python3 pgrep pkill script mkfifo timeout sha256sum tail tee flock tar; do
   check "${tool} is installed" "0" "$(status command -v "${tool}")"
 done
 check "flux-console is on the PATH" "0" "$(status command -v flux-console)"
@@ -93,6 +93,13 @@ check "the server comes up under a terminal" "0" "$(status wait_for "grep -q 'Lo
 check "Commands.dat is written from the environment" "Name Test Server|MaxPlayers 12|Port 31000|" "$(tr '\n' '|' <"${FLUX_DATA_DIR}/Default/Server/Commands.dat")"
 check "Servers/ is the data volume" "${FLUX_DATA_DIR}" "$(readlink "${FLUX_SERVER_DIR}/Servers")"
 check "flux-console reaches the console and prints the answer" "0" "$(status grep -q 'Successfully saved the game' <<<"$(flux-console save)")"
+flux-console players >/tmp/c1.out &
+c1=$!
+sleep 0.1
+flux-console save >/tmp/c2.out &
+c2=$!
+wait "${c1}" "${c2}"
+check "two console calls at once: each prints only its own answer" "1|0|0|1" "$(grep -c 'Unable to match \"players\"' /tmp/c1.out; true)|$(grep -c 'Unable to match \"players\"' /tmp/c2.out; true)|$(grep -c 'Successfully saved' /tmp/c1.out; true)|$(grep -c 'Successfully saved' /tmp/c2.out)"
 check "Ctrl-C typed into the console never reaches the server" "0" "$(status grep -q 'Successfully saved the game' <<<"$(flux-console $'sa\x03ve')")"
 check "the server is still the same one" "1" "$(status grep -q 'Application quitting' "${log}")"
 check "a first start writes Enable_Update_Shutdown" "0" "$(status grep -q 'Enable_Update_Shutdown True' "${FLUX_DATA_DIR}/Default/Config.txt")"

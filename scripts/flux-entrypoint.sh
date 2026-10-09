@@ -217,8 +217,8 @@ backupper() {
   [ "${FLUX_BACKUP_HOURS}" -gt 0 ] 2>/dev/null || exit 0
   while true; do
     sleep $((FLUX_BACKUP_HOURS * 3600))
-    flux_console save >/dev/null 2>&1 || continue
-    sleep 5
+    flux-console save >/dev/null 2>&1 || continue
+    sleep 2
     backup_world "every ${FLUX_BACKUP_HOURS}h"
   done
 }
@@ -257,7 +257,7 @@ autosaver() {
   [ "${autosave}" -gt 0 ] || exit 0
   while true; do
     sleep $((autosave * 60))
-    flux_console save >/dev/null 2>&1 && flux_log "autosave: save sent to the console"
+    flux-console save >/dev/null 2>&1 && flux_log "autosave: save sent to the console"
   done
 }
 

@@ -131,6 +131,9 @@ between a bad build and every server.
 
 ## Versions
 
+- **1.2.1** (2026-10-09): `flux-console` runs one command at a time (a lock over the command and
+  its answer), and the autosaver and backups go through it: two commands at once printed both
+  answers.
 - **1.2.0** (2026-10-09): `UNT_ROCKETMOD` (Rocket from the game's Extras/); world backups on start
   and every 6 hours; `Enable_Update_Shutdown True` unless the owner set it; the login-token watcher
   no longer takes Steam being unreachable for a refused token, stops watching once the map loads

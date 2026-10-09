@@ -12,12 +12,23 @@
 # waits for the log to grow, up to FLUX_CONSOLE_WAIT seconds (default 3), and then half a second
 # more for the rest of the answer.
 #
-# Exit 1 when no server is running, 64 without a command.
+# ONE AT A TIME. The answer is "what the log gained", so two commands in flight at once each print
+# both answers (measured: players and save run together). The whole send-and-read holds a lock;
+# a second caller waits for it (up to FLUX_CONSOLE_LOCK_WAIT seconds, default 15, then exits 75).
+# The autosaver and the backups go through this command too, for the same reason.
+#
+# Exit 1 when no server is running, 64 without a command, 75 when the console stayed busy.
 set -uo pipefail
 # shellcheck source=scripts/flux-lib.sh
 FLUX_LOG="" source /opt/flux/flux-lib.sh
 
 [ $# -gt 0 ] || { echo "usage: flux-console <command...>" >&2; exit 64; }
+
+exec 9>"${FLUX_CONSOLE_LOCK}"
+if ! flock -w "${FLUX_CONSOLE_LOCK_WAIT:-15}" 9; then
+  echo "the console is busy with another command; try again" >&2
+  exit 75
+fi
 
 log="$(flux_game_log)"
 before=0
