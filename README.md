@@ -20,8 +20,10 @@ marketplace sells:
 | Saving | None: Unturned has no autosave, and `docker stop` killed the server | `save` every 10 minutes, `shutdown` (save and quit) on stop: 2.4 s, exit 0, measured |
 | Console | stdin, which Unturned ignores unless it is a terminal | The server runs in a pseudo-terminal fed by a FIFO; `flux-console <command>` runs a command and prints the answer |
 | Workshop | Edit `WorkshopDownloadConfig.json` by hand | `UNT_WORKSHOP_IDS` |
-| RocketMod | Downloaded from ci.rocketmod.net on every start, which now serves an HTML page | Not installed |
+| RocketMod | Downloaded from ci.rocketmod.net on every start, which now serves an HTML page | `UNT_ROCKETMOD=true`: the Rocket build the game itself ships (Extras/Rocket.Unturned), copied into Modules/ every start |
 | Server crashes | The container ends | Restarted in place; the container only ends after 5 crashes in an hour (exit 42) |
+| Game updates | Clients updated, server stuck on the old build until a restart | `Enable_Update_Shutdown True` in Config.txt unless the owner set it: the server restarts for an update and SteamCMD installs it |
+| Backups | None | The world as a .tar.gz on every start and every 6 hours, the last 5 kept |
 
 ## Configuration
 
@@ -39,19 +41,25 @@ marketplace sells:
 | `UNT_WELCOME` | | `Welcome`: the message shown on join |
 | `UNT_MODE` | | `Mode`: Easy, Normal or Hard, the difficulty whose defaults `Config.txt` falls back to (the server's own default is Normal) |
 | `UNT_WORKSHOP_IDS` | | Comma-separated Workshop file IDs, written into `WorkshopDownloadConfig.json`'s `File_IDs`; the server downloads them and their dependencies on start |
+| `UNT_ROCKETMOD` | | `true`: Rocket (RocketMod, the build in the game's `Extras/`) copied into `Modules/` every start; plugins in `Default/Rocket/Plugins` on the data volume. `false`: taken out of `Modules/`, plugins kept. Unset: `Modules/` left alone |
 | `FLUX_PORT` | `27015` | The FIRST of the two UDP ports the server uses (server list queries); the game uses the next one |
 | `FLUX_SERVER_ID` | `Default` | The server's folder under `Servers/` |
 | `FLUX_AUTOSAVE_MINUTES` | `10` | Minutes between saves, 0 to turn them off, 120 at most |
+| `FLUX_BACKUP_HOURS` / `FLUX_BACKUP_KEEP` | `6` / `5` | A backup of the world (`flux/backups/<time>-Default.tar.gz`) on every start and every N hours after a save; the last K kept. 0 turns either off |
+| `FLUX_UPDATE_SHUTDOWN` | `true` | Sets `Enable_Update_Shutdown True` in Config.txt when the owner left it at the game's default; `false` leaves the file alone |
 | `SKIP_UPDATE` | | `true`: start the installed build without asking Steam |
 | `FLUX_STOP_GRACE` | `60` | Seconds a restart may take to save before it is forced |
 | `FLUX_RESTART_MAX_ATTEMPTS` / `FLUX_RESTART_WINDOW` | `5` / `3600` | Unplanned restarts allowed per window before the container ends with 42 |
 
 **The environment wins, for the commands it names.** A variable that is set replaces that
 command's line in `Commands.dat`; one set to an empty value removes the line; one that is not set
-leaves the owner's line alone. Every other line, comments included, is kept.
+leaves the owner's line alone. Every other line, comments included, is kept. An invalid password or
+token removes its line rather than keep the old one (a server meant to get a new password must not
+stay on the old one), and says so in the log.
 
-Everything else (difficulty, loot, the server list's descriptions and icons, scheduled
-shutdowns) is the server's own `Config.txt`, which the image never touches.
+Everything else (loot, the server list's descriptions and icons, scheduled shutdowns) is the
+server's own `Config.txt`. The image touches one setting of it, `Enable_Update_Shutdown` (above);
+on a first start it writes a file holding only that, and the server fills in the rest.
 
 ### The login token
 
@@ -63,6 +71,11 @@ A token Steam refuses (mistyped, revoked, expired) makes the real server stop re
 load its map. The supervisor watches for it, remembers the token's fingerprint (never the token)
 in `flux/gslt-refused`, and restarts the server without it, with a warning in the log, until
 `UNT_GSLT` changes.
+
+Steam being unreachable is not a refusal: the server logs `k_EResultNoConnection, still retrying`
+and keeps trying (measured with `--network none`), and the token is left alone. Only the token in
+`Commands.dat` is watched, only until the map has loaded, and the server is always asked to shut
+down through its console (a signal would not save).
 
 ## Volumes
 
@@ -89,6 +102,17 @@ Ports: `FLUX_PORT` and the one after it, UDP.
 - a made-up `UNT_GSLT`: "Successfully set game server login token", then Steam's
   `k_EResultAccountNotFound`; restarted without it and up 31 s after the container started
 
+## Measured (2026-10-09, image 1.2.0, Unturned 3.26.3.13)
+
+- `UNT_ROCKETMOD=true`: "Rocket Unturned v4.9.3.18 for Unturned v3.26.3.13", "Initialized module
+  Rocket.Unturned", its files created in `Default/Rocket` on the data volume
+- first start with no Config.txt: the one-setting file was filled in by the server (1318 lines)
+  and kept `Enable_Update_Shutdown True`
+- a made-up token: refused (`k_EResultAccountNotFound, no longer retrying`), `shutdown` through
+  the console taken at once, back without the token 12 s later
+- `--network none` with a token: `k_EResultNoConnection, still retrying` for minutes, token kept
+- `flux-console $'sa\x03ve'`: saved, server untouched (1.1.0 quit on the Ctrl-C)
+
 ## Development
 
 ```bash
@@ -98,13 +122,20 @@ docker build -t unturned-server-flux:local .
 docker run --rm -v "$PWD:/mnt" -w /mnt koalaman/shellcheck:stable -x scripts/*.sh tests/*.sh tests/image/*.sh
 ```
 
-A push to `main` tests, builds, tests the built image and publishes `:latest`, `:<VERSION>` and
-`:<sha>`. A weekly run rebuilds on a patched base. FluxOS's image update service checks every
+A push to `main` tests, builds, tests the built image and publishes THAT image as `:latest` and
+`:<sha>`, and as `:<VERSION>` when that tag does not exist yet (a version tag is never rewritten,
+so bump `VERSION` for a new one). A weekly run rebuilds on a patched base. FluxOS's image update service checks every
 running app's tag every six hours and soft-redeploys onto a new image (volumes kept), so a
 published `:latest` reaches running servers within hours: the image test gate is what stands
 between a bad build and every server.
 
 ## Versions
 
+- **1.2.0** (2026-10-09): `UNT_ROCKETMOD` (Rocket from the game's Extras/); world backups on start
+  and every 6 hours; `Enable_Update_Shutdown True` unless the owner set it; the login-token watcher
+  no longer takes Steam being unreachable for a refused token, stops watching once the map loads
+  and stops the server through its console; control characters never reach the console; an
+  invalid password or token removes its line; Commands.dat that is not UTF-8 is still edited; CI
+  publishes the image it tested and never rewrites a version tag.
 - **1.1.0** (2026-10-08): `UNT_MODE` (the `Mode` command: Easy, Normal or Hard).
 - **1.0.0** (2026-10-08): first release.

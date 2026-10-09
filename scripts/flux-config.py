@@ -3,6 +3,7 @@
 
     flux-config.py commands <Commands.dat>
     flux-config.py workshop <WorkshopDownloadConfig.json>
+    flux-config.py config <Config.txt>
 
 Commands.dat is one console command per line, run when the server starts (`Name My Server`,
 `MaxPlayers 24`, `Cheats`). It is where Unturned takes the server's name, map, player limit,
@@ -17,6 +18,12 @@ case-insensitively, as the server reads them.
 
 The Workshop list (UNT_WORKSHOP_IDS, comma separated) is written into File_IDs; every other key
 of WorkshopDownloadConfig.json is kept.
+
+Config.txt: Server.Enable_Update_Shutdown is set to True when the owner left it at the game's
+default (False), so a server restarts for a game update instead of locking its players out until
+somebody restarts it (FLUX_UPDATE_SHUTDOWN=false turns this off). A value the owner set is kept. On
+a first start, before the server has written the file, a file with only that setting is written:
+the server fills in the rest and keeps the value.
 
 Prints one line per change. Exit 0 on success (a file that cannot be edited is left as it is and
 reported), 64 for a usage error.
@@ -94,6 +101,12 @@ def apply_commands(text, env):
             continue
         check = VALID.get(cmd)
         if check and not check(value):
+            if cmd in SECRET:
+                # Keeping the OLD password or token would look like the new one was taken: a
+                # server meant to be closed with a new password stays open with the old one.
+                wanted[cmd.lower()] = None
+                changes.append(f'WARN {var} is not a valid {cmd}; its line is removed (no {cmd.lower()} until it is fixed)')
+                continue
             changes.append(f'WARN {var} is not a valid {cmd}; left as it was')
             continue
         wanted[cmd.lower()] = f'{cmd} {value}'
@@ -163,25 +176,74 @@ def apply_workshop(text, env):
     return json.dumps(data, indent=2) + '\n', [f'Workshop File_IDs: {", ".join(map(str, ids)) or "none"}']
 
 
+def apply_config(text, env):
+    """Server.Enable_Update_Shutdown True when it is bare or absent. (new text or None, changes)."""
+    if env.get('FLUX_UPDATE_SHUTDOWN', 'true').strip().lower() not in TRUE:
+        return None, []
+    key = 'Enable_Update_Shutdown'
+    if text is None:
+        return f'Server\n{{\n\t{key} True\n}}\n', [f'Server.{key} True (new file; the server fills in the rest)']
+    nl = '\r\n' if '\r\n' in text else '\n'
+    lines = text.split(nl)
+    depth, section, server_close = 0, None, None
+    pending = None
+    for i, line in enumerate(lines):
+        bare = line.strip()
+        if not bare or bare.startswith('//'):
+            continue
+        if bare == '{':
+            depth += 1
+            if depth == 1:
+                section = pending
+            continue
+        if bare == '}':
+            if depth == 1 and section == 'Server':
+                server_close = i
+            depth = max(0, depth - 1)
+            if depth == 0:
+                section = None
+            continue
+        if depth == 0:
+            pending = bare.split()[0]
+            continue
+        if depth == 1 and section == 'Server' and bare.split()[0] == key:
+            if len(bare.split()) > 1:
+                return None, []
+            indent = line[:len(line) - len(line.lstrip())]
+            lines[i] = f'{indent}{key} True'
+            return nl.join(lines), [f'Server.{key} True (was the default, False)']
+    if server_close is not None:
+        lines.insert(server_close, f'\t{key} True')
+        return nl.join(lines), [f'Server.{key} True (added)']
+    return None, ['WARN Config.txt has no Server section; Enable_Update_Shutdown left alone']
+
+
 def main(argv):
-    if len(argv) != 3 or argv[1] not in ('commands', 'workshop'):
+    if len(argv) != 3 or argv[1] not in ('commands', 'workshop', 'config'):
         print(__doc__.strip().splitlines()[0], file=sys.stderr)
         return 64
     path = argv[2]
+    bom = ''
     try:
-        with open(path, encoding='utf-8-sig') as f:
+        # surrogateescape: a file with a byte that is not UTF-8 (an owner's Latin-1 accent) is
+        # still edited, and that byte written back exactly as it was.
+        with open(path, encoding='utf-8', errors='surrogateescape', newline='') as f:
             text = f.read()
+        if text.startswith('\ufeff'):
+            bom, text = '\ufeff', text[1:]
     except FileNotFoundError:
-        text = ''
+        text = None
     if argv[1] == 'commands':
-        new, changes = apply_commands(text, os.environ)
+        new, changes = apply_commands(text or '', os.environ)
+    elif argv[1] == 'workshop':
+        new, changes = apply_workshop(text or '', os.environ)
     else:
-        new, changes = apply_workshop(text, os.environ)
+        new, changes = apply_config(text, os.environ)
     if new is not None and new != text:
         os.makedirs(os.path.dirname(path) or '.', exist_ok=True)
         tmp = f'{path}.flux-tmp'
-        with open(tmp, 'w', encoding='utf-8') as f:
-            f.write(new)
+        with open(tmp, 'w', encoding='utf-8', errors='surrogateescape', newline='') as f:
+            f.write(bom + new)
         os.replace(tmp, path)
     for change in changes:
         print(change)

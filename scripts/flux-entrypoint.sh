@@ -12,7 +12,11 @@
 #   - the server ending on its own (its own scheduled or update shutdown, a crash): a new
 #     generation in the same container, updated from Steam first
 #   - FLUX_RESTART_MAX_ATTEMPTS unplanned restarts inside FLUX_RESTART_WINDOW seconds: the
-#     container ends with 42, a server that cannot stay up is the platform's to rebuild or move
+#     container ends with 42 (FluxOS starts it again on the same node, with a fresh budget)
+#   - UNT_ROCKETMOD: Rocket (the RocketMod build the game ships in Extras/) copied into Modules/
+#     on every start, or taken out; plugins and their settings live on the data volume
+#   - a backup of the world on every start and every FLUX_BACKUP_HOURS, the last FLUX_BACKUP_KEEP
+#     kept on the data volume (flux/backups)
 #
 # Same shape as runonflux/7dtd-server-flux.
 
@@ -26,6 +30,8 @@ FLUX_RESTART_BACKOFF="${FLUX_RESTART_BACKOFF:-10}"
 # How long a server asked to stop may take before it is killed. Docker's own deadline on Flux is
 # ten seconds, so this only matters for a restart, where nobody is waiting on us.
 FLUX_STOP_GRACE="${FLUX_STOP_GRACE:-60}"
+FLUX_BACKUP_HOURS="${FLUX_BACKUP_HOURS:-6}"
+FLUX_BACKUP_KEEP="${FLUX_BACKUP_KEEP:-5}"
 
 s="${FLUX_SERVER_DIR}"
 d="${FLUX_DATA_DIR}"
@@ -52,6 +58,9 @@ game_pid=""
 tail_pid=""
 saver_pid=""
 watch_pid=""
+backup_pid=""
+# The token actually written into Commands.dat this generation ("" when none or when left out).
+gslt_in_use=""
 terminating=0
 generation=0
 restart_history=()
@@ -62,14 +71,12 @@ rm -f "${FLUX_CONSOLE_FIFO}"
 mkfifo -m 600 "${FLUX_CONSOLE_FIFO}"
 exec 3<>"${FLUX_CONSOLE_FIFO}"
 
-# Asks the running server to save and quit. The console's `shutdown` saves the world first; the
-# signal is the fallback for a console that does not answer.
+# Asks the running server to save and quit: the console's `shutdown` saves the world first. A
+# server that does not honour it is ended by wait_for_generation after FLUX_STOP_GRACE (a signal
+# would not save either: Unturned does not save on SIGTERM, measured).
 stop_server() {
   [ -n "${game_pid}" ] || return 0
-  if ! printf 'shutdown\n' >&3; then
-    flux_log "WARN the console did not take the command; stopping the server with a signal"
-    kill -TERM "${game_pid}" 2>/dev/null
-  fi
+  printf 'shutdown\n' >&3
 }
 
 # shellcheck disable=SC2329  # invoked by the trap below
@@ -146,27 +153,100 @@ prepare_config() {
     flux_log "Commands.dat: ${line}"
   done < <(if [ -n "${UNT_GSLT+set}" ]; then export UNT_GSLT="${gslt}"; fi
     python3 /opt/flux/flux-config.py commands "${dir}/Server/Commands.dat" 2>&1)
+  gslt_in_use="${gslt}"
+  [ -n "${UNT_GSLT+set}" ] || gslt_in_use="$(flux_dat_value "${dir}/Server/Commands.dat" GSLT)"
   while IFS= read -r line; do
     flux_log "Workshop: ${line}"
   done < <(python3 /opt/flux/flux-config.py workshop "${dir}/WorkshopDownloadConfig.json" 2>&1)
+  while IFS= read -r line; do
+    flux_log "Config.txt: ${line}"
+  done < <(python3 /opt/flux/flux-config.py config "${dir}/Config.txt" 2>&1)
   # A file the edit could not parse is still the owner's: the server gets it as it is.
   return 0
+}
+
+# ROCKET, the RocketMod build Smartly Dressed Games ships inside the server (Extras/Rocket.Unturned,
+# "Legally Distinct Missile"). Unturned loads what is in Modules/, which is in the install (local
+# to the node), so it is copied in on every start rather than once: a server moved to a fresh node
+# gets it back. Its plugins, their settings and Rocket's own files are in Servers/<id>/Rocket, on
+# the data volume. UNT_ROCKETMOD unset leaves Modules/ as it is.
+prepare_rocket() {
+  local src="${s}/Extras/Rocket.Unturned" dst="${s}/Modules/Rocket.Unturned"
+  [ -n "${UNT_ROCKETMOD+set}" ] || return 0
+  if flux_truthy "${UNT_ROCKETMOD}"; then
+    if [ ! -d "${src}" ]; then
+      flux_log "WARN UNT_ROCKETMOD is on but this Unturned build has no Extras/Rocket.Unturned; starting without it"
+      return 0
+    fi
+    mkdir -p "${s}/Modules"
+    rm -rf "${dst}.flux-tmp"
+    cp -a "${src}" "${dst}.flux-tmp" && rm -rf "${dst}" && mv "${dst}.flux-tmp" "${dst}"
+    mkdir -p "${d}/${FLUX_SERVER_ID}/Rocket/Plugins"
+    flux_log "Rocket: on (plugins go in Servers/${FLUX_SERVER_ID}/Rocket/Plugins)"
+  elif [ -d "${dst}" ]; then
+    rm -rf "${dst}"
+    flux_log "Rocket: off (removed from Modules/; plugins and their settings are kept on the data volume)"
+  fi
+}
+
+# A .tar.gz of the server's folder (world, players, settings, Rocket), without the Workshop
+# downloads (their own local volume, downloaded again) and without our logs and backups. Written
+# beside, then renamed, so a cut-off backup never looks like one. The last FLUX_BACKUP_KEEP are
+# kept.
+backup_world() {
+  local why="$1" dir="${d}/${FLUX_SERVER_ID}" out name
+  [ "${FLUX_BACKUP_KEEP}" -gt 0 ] 2>/dev/null || return 0
+  [ -d "${dir}" ] || return 0
+  [ -n "$(find "${dir}" -mindepth 1 -maxdepth 1 ! -name Workshop -print -quit 2>/dev/null)" ] || return 0
+  mkdir -p "${FLUX_BACKUP_DIR}"
+  name="$(date -u +%Y%m%d-%H%M%S)-${FLUX_SERVER_ID}.tar.gz"
+  out="${FLUX_BACKUP_DIR}/${name}"
+  if tar -C "${d}" --exclude="${FLUX_SERVER_ID}/Workshop" -czf "${out}.part" "${FLUX_SERVER_ID}" 2>/dev/null \
+    && mv "${out}.part" "${out}"; then
+    flux_log "backup (${why}): flux/backups/${name}, $(du -h "${out}" | cut -f1)"
+  else
+    rm -f "${out}.part"
+    flux_log "WARN backup (${why}) failed"
+  fi
+  flux_prune "${FLUX_BACKUP_DIR}" "*-${FLUX_SERVER_ID}.tar.gz" "${FLUX_BACKUP_KEEP}"
+}
+
+# shellcheck disable=SC2329  # run in the background below
+# Every FLUX_BACKUP_HOURS: a save first, so the backup holds the world as it is now.
+backupper() {
+  [ "${FLUX_BACKUP_HOURS}" -gt 0 ] 2>/dev/null || exit 0
+  while true; do
+    sleep $((FLUX_BACKUP_HOURS * 3600))
+    flux_console save >/dev/null 2>&1 || continue
+    sleep 5
+    backup_world "every ${FLUX_BACKUP_HOURS}h"
+  done
 }
 
 # shellcheck disable=SC2329  # run in the background below
 # Watches the game log for Steam refusing the login token. The server never recovers from it on
 # its own (it stops retrying and never loads), so the token is remembered as refused and the
 # server is restarted without it.
+#
+# Only the token actually in Commands.dat is watched, only until the map has loaded (a connection
+# lost later is the server's to retry), and only a refusal of the TOKEN is remembered: Steam being
+# unreachable restarts the server with the token still in place. The server is asked to shut down
+# through its console, never signalled: a signal would not save.
 login_watch() {
   local line
-  [ -n "${UNT_GSLT:-}" ] || exit 0
+  [ -n "${gslt_in_use}" ] || exit 0
   while IFS= read -r line; do
+    flux_level_loaded "${line}" && exit 0
     if flux_login_refused "${line}"; then
-      flux_token_fingerprint "${UNT_GSLT}" >"${FLUX_GSLT_REFUSED}"
-      printf 'planned: Steam refused the login token (%s)\n' "${line##*because }" >"${FLUX_RESTART_MARKER}"
-      flux_log "WARN Steam refused the server's login token: restarting without it"
-      sleep 2
-      pkill -TERM -f "${FLUX_GAME_PROCESS}" 2>/dev/null
+      flux_token_fingerprint "${gslt_in_use}" >"${FLUX_GSLT_REFUSED}"
+      printf 'Steam refused the login token (%s)\n' "${line##*because }" >"${FLUX_RESTART_MARKER}"
+      flux_log "WARN Steam refused the server's login token: restarting without it until the token changes"
+      flux_console shutdown >/dev/null 2>&1
+      exit 0
+    elif flux_login_gave_up "${line}"; then
+      printf 'Steam could not be reached (%s)\n' "${line##*because }" >"${FLUX_RESTART_MARKER}"
+      flux_log "WARN the server gave up reaching Steam (not a token problem): restarting it, token kept"
+      flux_console shutdown >/dev/null 2>&1
       exit 0
     fi
   done < <(tail -n +1 -F "$(flux_game_log)" 2>/dev/null)
@@ -189,7 +269,9 @@ start_generation() {
   update_server || return 1
   [ "${terminating}" = "1" ] && return 2
   link_data
+  backup_world "start"
   prepare_config
+  prepare_rocket
   flux_prune "${FLUX_GAME_LOG_DIR}" '*-server.log' "${FLUX_GAME_LOG_KEEP}"
   [ "${terminating}" = "1" ] && return 2
 
@@ -225,15 +307,17 @@ start_generation() {
   saver_pid=$!
   login_watch &
   watch_pid=$!
+  backupper &
+  backup_pid=$!
   return 0
 }
 
 sweep_generation() {
   local pid
-  for pid in "${saver_pid}" "${tail_pid}" "${watch_pid}"; do
+  for pid in "${saver_pid}" "${tail_pid}" "${watch_pid}" "${backup_pid}"; do
     [ -n "${pid}" ] && kill "${pid}" 2>/dev/null
   done
-  saver_pid="" tail_pid="" watch_pid=""
+  saver_pid="" tail_pid="" watch_pid="" backup_pid=""
   # The tail on the other side of that pipe would otherwise outlive the generation.
   pkill -f "tail -n [0+1]* -F $(flux_game_log)" 2>/dev/null
   pkill -KILL -f "${FLUX_GAME_PROCESS}" 2>/dev/null

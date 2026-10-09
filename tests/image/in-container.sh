@@ -47,7 +47,8 @@ while [ $# -gt 0 ]; do
   shift
 done
 [ -n "${dir}" ] || exit 0
-mkdir -p "${dir}/linux64"
+mkdir -p "${dir}/linux64" "${dir}/Extras/Rocket.Unturned"
+echo module >"${dir}/Extras/Rocket.Unturned/Rocket.Unturned.module"
 cat >"${dir}/Unturned_Headless.x86_64" <<'GAME'
 #!/bin/bash
 id="${@: -1}"; id="${id#+InternetServer/}"
@@ -58,6 +59,11 @@ dat="Servers/${id}/Server/Commands.dat"
 say "Commands.dat: $(tr '\n' '|' <"${dat}")"
 if grep -qx 'GSLT 0*REFUSED0*' "${dat}" 2>/dev/null || grep -q '^GSLT AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' "${dat}"; then
   say "Failed to connect to Steam servers because k_EResultAccountNotFound, no longer retrying"
+  sleep 1000 & wait
+fi
+if grep -q '^GSLT BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB' "${dat}"; then
+  say "Failed to connect to Steam servers because k_EResultNoConnection, still retrying"
+  say "Failed to connect to Steam servers because k_EResultNoConnection, no longer retrying"
   sleep 1000 & wait
 fi
 if [ ! -t 0 ]; then
@@ -78,7 +84,7 @@ chmod +x "${dir}/Unturned_Headless.x86_64"
 STUB
 chmod +x /usr/local/bin/steamcmd
 
-export FLUX_SERVER_DIR=/tmp/srv FLUX_DATA_DIR=/tmp/data FLUX_RESTART_BACKOFF=1 FLUX_AUTOSAVE_MINUTES=0
+export FLUX_SERVER_DIR=/tmp/srv FLUX_DATA_DIR=/tmp/data FLUX_RESTART_BACKOFF=1 FLUX_AUTOSAVE_MINUTES=0 FLUX_STOP_GRACE=3
 log="${FLUX_SERVER_DIR}/Logs/Server_Default.log"
 
 UNT_NAME='Test Server' UNT_MAX_PLAYERS=12 FLUX_PORT=31000 /opt/flux/flux-entrypoint.sh >/tmp/sup.log 2>&1 &
@@ -87,6 +93,9 @@ check "the server comes up under a terminal" "0" "$(status wait_for "grep -q 'Lo
 check "Commands.dat is written from the environment" "Name Test Server|MaxPlayers 12|Port 31000|" "$(tr '\n' '|' <"${FLUX_DATA_DIR}/Default/Server/Commands.dat")"
 check "Servers/ is the data volume" "${FLUX_DATA_DIR}" "$(readlink "${FLUX_SERVER_DIR}/Servers")"
 check "flux-console reaches the console and prints the answer" "0" "$(status grep -q 'Successfully saved the game' <<<"$(flux-console save)")"
+check "Ctrl-C typed into the console never reaches the server" "0" "$(status grep -q 'Successfully saved the game' <<<"$(flux-console $'sa\x03ve')")"
+check "the server is still the same one" "1" "$(status grep -q 'Application quitting' "${log}")"
+check "a first start writes Enable_Update_Shutdown" "0" "$(status grep -q 'Enable_Update_Shutdown True' "${FLUX_DATA_DIR}/Default/Config.txt")"
 check "the log is copied onto the data volume" "0" "$(status wait_for "grep -qh 'Successfully saved' ${FLUX_DATA_DIR}/flux/logs/*-server.log" 5)"
 
 kill -TERM "${sup}"
@@ -95,6 +104,38 @@ check "a stop exits 0" "0" "$?"
 check "a stop is a save and a shutdown" "0" "$(status grep -q 'Saving during server shutdown' "${log}")"
 check "and never a bare signal" "1" "$(status grep -q 'SIGTERM without a save' "${log}")"
 check "nothing is left running" "1" "$(status pgrep -f 'Unturned_Headless|tail -n')"
+
+# Rocket on: copied into Modules/ from the game's Extras/, a Plugins folder on the data volume,
+# and a backup of the world from the previous run.
+rm -f "${log}"
+UNT_ROCKETMOD=true /opt/flux/flux-entrypoint.sh >/tmp/sup3.log 2>&1 &
+sup=$!
+check "Rocket on comes up" "0" "$(status wait_for "grep -q 'Loading level: 100%' ${log}" 20)"
+check "Rocket is in Modules/" "0" "$(status test -f "${FLUX_SERVER_DIR}/Modules/Rocket.Unturned/Rocket.Unturned.module")"
+check "plugins go on the data volume" "0" "$(status test -d "${FLUX_DATA_DIR}/Default/Rocket/Plugins")"
+check "a start backs the world up" "1" "$(find "${FLUX_DATA_DIR}/flux/backups" -name '*-Default.tar.gz' 2>/dev/null | wc -l)"
+check "the backup holds the server's files" "0" "$(status tar -tzf "$(find "${FLUX_DATA_DIR}/flux/backups" -name '*-Default.tar.gz' | head -1)" Default/Server/Commands.dat)"
+kill -TERM "${sup}"
+wait "${sup}"
+rm -f "${log}"
+UNT_ROCKETMOD=false FLUX_BACKUP_KEEP=1 /opt/flux/flux-entrypoint.sh >/tmp/sup4.log 2>&1 &
+sup=$!
+check "Rocket off comes up" "0" "$(status wait_for "grep -q 'Loading level: 100%' ${log}" 20)"
+check "Rocket is out of Modules/" "1" "$(status test -e "${FLUX_SERVER_DIR}/Modules/Rocket.Unturned")"
+check "the plugins folder is kept" "0" "$(status test -d "${FLUX_DATA_DIR}/Default/Rocket/Plugins")"
+check "only FLUX_BACKUP_KEEP backups are kept" "1" "$(find "${FLUX_DATA_DIR}/flux/backups" -name '*-Default.tar.gz' 2>/dev/null | wc -l)"
+kill -TERM "${sup}"
+wait "${sup}"
+
+# Steam unreachable: the server gives up, so it is restarted, but the token is KEPT (not a refusal).
+rm -rf "${FLUX_SERVER_DIR}" "${FLUX_DATA_DIR}"
+UNT_GSLT=BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB /opt/flux/flux-entrypoint.sh >/tmp/sup5.log 2>&1 &
+sup=$!
+check "Steam unreachable restarts the server" "0" "$(status wait_for "grep -q 'gave up reaching Steam' /tmp/sup5.log" 30)"
+check "the token is not remembered as refused" "1" "$(status test -e "${FLUX_DATA_DIR}/flux/gslt-refused")"
+check "the GSLT line stays" "0" "$(status wait_for "grep -q '^GSLT BBBB' ${FLUX_DATA_DIR}/Default/Server/Commands.dat" 5)"
+kill -TERM "${sup}"
+wait "${sup}"
 
 # A refused login token: the server never loads, so the supervisor restarts it without the token,
 # and keeps it out until the token changes.

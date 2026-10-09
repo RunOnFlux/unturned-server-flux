@@ -25,6 +25,8 @@ FLUX_CONSOLE_FIFO="${FLUX_CONSOLE_FIFO:-/tmp/flux-console}"
 FLUX_RESTART_MARKER="${FLUX_RESTART_MARKER:-/tmp/flux-restart-requested}"
 # The fingerprint of a login token Steam refused, so the next start leaves it out.
 FLUX_GSLT_REFUSED="${FLUX_GSLT_REFUSED:-${FLUX_DATA_DIR}/flux/gslt-refused}"
+# The world backups (flux-entrypoint.sh backup_world).
+FLUX_BACKUP_DIR="${FLUX_BACKUP_DIR:-${FLUX_DATA_DIR}/flux/backups}"
 
 flux_log() {
   local line
@@ -88,12 +90,31 @@ flux_token_fingerprint() {
   printf '%s' "$1" | sha256sum | cut -c1-16
 }
 
-# $1 = a line of the game log. True when Steam refused the server's login (a token that is
-# invalid, revoked or expired): the server then waits for Steam forever and never loads its map.
-# Measured with a made-up token: "Failed to connect to Steam servers because
-# k_EResultAccountNotFound, no longer retrying".
+# Steam results that say "could not reach Steam", not "Steam refused the token". The server logs
+# them with "still retrying" while it keeps trying (measured with --network none:
+# "k_EResultNoConnection, still retrying"); if it ever gives up on one, the token is still good.
+FLUX_STEAM_TRANSIENT='NoConnection|ServiceUnavailable|Timeout|TryAnotherCM|Busy|Pending|RateLimitExceeded|ConnectFailed|IOFailure|RemoteDisconnect|Fail'
+
+# $1 = a line of the game log. True when Steam REFUSED the server's login token (invalid, revoked,
+# expired): the server stops retrying and never loads its map. Measured with a made-up token:
+# "Failed to connect to Steam servers because k_EResultAccountNotFound, no longer retrying".
+# A line that is still retrying, or names a result that only means Steam was unreachable, is not
+# a refusal: remembering the token as refused then would hide a server with a valid token.
 flux_login_refused() {
-  [[ "$1" == *"Failed to connect to Steam servers because"* ]]
+  [[ "$1" == *"Failed to connect to Steam servers because"*"no longer retrying"* ]] || return 1
+  ! [[ "$1" =~ k_EResult(${FLUX_STEAM_TRANSIENT}), ]]
+}
+
+# $1 = a line of the game log. True when the server gave up on Steam for a reason that is NOT the
+# token (Steam unreachable): worth a restart, never worth dropping the token.
+flux_login_gave_up() {
+  [[ "$1" == *"Failed to connect to Steam servers because"*"no longer retrying"* ]] && ! flux_login_refused "$1"
+}
+
+# $1 = a line of the game log. True once the map has loaded: from then on the login is done, and a
+# Steam connection lost later is the server's to retry, never a reason to restart it.
+flux_level_loaded() {
+  [[ "$1" == *"Loading level: 100%"* ]]
 }
 
 # ---------------------------------------------------------------------------------------------
@@ -151,6 +172,13 @@ flux_prune() {
 # The running server.
 # ---------------------------------------------------------------------------------------------
 
+# $1 = Commands.dat, $2 = a command. Prints that command's value (the rest of its line), or
+# nothing. Matched case-insensitively, as the server reads it.
+flux_dat_value() {
+  [ -f "$1" ] || return 0
+  awk -v want="${2,,}" 'tolower($1) == want { sub(/^[ \t]*[^ \t]+[ \t]*/, ""); sub(/\r$/, ""); print; exit }' "$1"
+}
+
 # The game's own log, rewritten by the server on every start.
 flux_game_log() {
   printf '%s' "${FLUX_SERVER_DIR}/Logs/Server_${FLUX_SERVER_ID}.log"
@@ -160,14 +188,21 @@ flux_game_pid() {
   pgrep -f "${FLUX_GAME_PROCESS}" 2>/dev/null | head -1
 }
 
+# $1 = a console command as given. Prints it as one line with no control characters: it is typed
+# into a terminal, where Ctrl-C (\x03) quits the server and Ctrl-\\ (\x1c) kills it without a save
+# (both measured). Line breaks become spaces, every other control character is dropped.
+flux_console_line() {
+  local cmd="${1//[$'\r\n']/ }"
+  printf '%s' "${cmd}" | LC_ALL=C tr -d '\000-\037\177'
+}
+
 # $1 = one console command. Written into the server's stdin; returns 1 when nothing is reading
 # it (no server running), without blocking.
 flux_console() {
   local cmd="$1"
   [ -p "${FLUX_CONSOLE_FIFO}" ] || return 1
   [ -n "$(flux_game_pid)" ] || return 1
-  # One line, no control characters: it is typed into the server's console.
-  cmd="${cmd//[$'\r\n']/ }"
+  cmd="$(flux_console_line "${cmd}")"
   # shellcheck disable=SC2016  # expanded by the inner bash, from its own arguments
   timeout 2 bash -c 'printf "%s\n" "$1" >"$2"' _ "${cmd}" "${FLUX_CONSOLE_FIFO}"
 }

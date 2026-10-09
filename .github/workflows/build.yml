@@ -58,8 +58,9 @@ jobs:
       - name: Version
         run: echo "VERSION=$(tr -d '[:space:]' <VERSION)" >>"$GITHUB_ENV"
 
-      # Built and loaded first, tested, and only then pushed: :latest must never be an image the
-      # tests have not run in. The first one published could not unpack a mod (python3-minimal).
+      # Built and loaded first, tested, and then THAT image is pushed: :latest must never be an
+      # image the tests have not run in (the first one published could not unpack a mod,
+      # python3-minimal). No second build for the push, which could miss the cache and differ.
       - name: Build
         uses: docker/build-push-action@v6
         with:
@@ -68,25 +69,30 @@ jobs:
           build-args: |
             FLUX_IMAGE_VERSION=${{ env.VERSION }}
           tags: ${{ env.IMAGE_NAME }}:${{ github.sha }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ env.VERSION }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
       - name: Test the image
         run: ./tests/test-image.sh "${IMAGE_NAME}:${{ github.sha }}"
 
-      - name: Push
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          push: true
-          build-args: |
-            FLUX_IMAGE_VERSION=${{ env.VERSION }}
-          tags: |
-            ${{ env.IMAGE_NAME }}:latest
-            ${{ env.IMAGE_NAME }}:${{ env.VERSION }}
-            ${{ env.IMAGE_NAME }}:${{ github.sha }}
-          labels: |
-            org.opencontainers.image.source=https://github.com/${{ github.repository }}
-            org.opencontainers.image.revision=${{ github.sha }}
-            org.opencontainers.image.version=${{ env.VERSION }}
-          cache-from: type=gha
+      # A version tag is written once. A later run on the same VERSION (the weekly rebuild, or a
+      # change that forgot to bump it) moves :latest and adds its commit tag, never rewrites
+      # :<VERSION>, so a server pinned to a version keeps exactly that image.
+      - name: Push the tested image
+        run: |
+          set -euo pipefail
+          tested="${IMAGE_NAME}:${{ github.sha }}"
+          tags=(latest "${{ github.sha }}")
+          if docker manifest inspect "${IMAGE_NAME}:${VERSION}" >/dev/null 2>&1; then
+            echo "::warning::${IMAGE_NAME}:${VERSION} already exists and is not rewritten; bump VERSION to publish a new version tag"
+          else
+            tags+=("${VERSION}")
+          fi
+          for tag in "${tags[@]}"; do
+            docker tag "${tested}" "${IMAGE_NAME}:${tag}"
+            docker push "${IMAGE_NAME}:${tag}"
+          done

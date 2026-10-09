@@ -53,6 +53,20 @@ check "the fingerprint is stable" "$(flux_token_fingerprint ABC)" "$(flux_token_
 check "the fingerprint is not the token" "1" "$(status test "$(flux_token_fingerprint ABC)" = ABC)"
 check "a refused login is seen" "0" "$(status flux_login_refused '[2026-10-08 17:47:32] Failed to connect to Steam servers because k_EResultAccountNotFound, no longer retrying')"
 check "an anonymous start is not a refusal" "1" "$(status flux_login_refused 'Steam Game Server Login Token (GSLT) not set')"
+check "Steam unreachable and still retrying is not a refusal" "1" "$(status flux_login_refused 'Failed to connect to Steam servers because k_EResultNoConnection, still retrying')"
+check "Steam unreachable and given up is not a refusal" "1" "$(status flux_login_refused 'Failed to connect to Steam servers because k_EResultNoConnection, no longer retrying')"
+check "...but it is a give-up worth a restart" "0" "$(status flux_login_gave_up 'Failed to connect to Steam servers because k_EResultNoConnection, no longer retrying')"
+check "a refused token is not a mere give-up" "1" "$(status flux_login_gave_up 'Failed to connect to Steam servers because k_EResultAccountNotFound, no longer retrying')"
+check "an expired token is a refusal" "0" "$(status flux_login_refused 'Failed to connect to Steam servers because k_EResultExpired, no longer retrying')"
+check "the map loaded" "0" "$(status flux_level_loaded '[2026-10-09 10:00:00] Loading level: 100%')"
+
+# --- The console -------------------------------------------------------------------------------
+check "Ctrl-C and Ctrl-\\ never reach the console" "say hi" "$(flux_console_line $'say \x03h\x1ci')"
+check "a line break becomes a space" "say a b" "$(flux_console_line $'say a\nb')"
+check "ordinary text is untouched" "kick Bob/griefing" "$(flux_console_line 'kick Bob/griefing')"
+printf 'Name X\r\ngslt ABCDEF\r\n' >"${tmp}/c.dat"
+check "a command's value is read case-insensitively" "ABCDEF" "$(flux_dat_value "${tmp}/c.dat" GSLT)"
+check "a missing command is empty" "" "$(flux_dat_value "${tmp}/c.dat" Owner)"
 
 # --- Commands.dat ------------------------------------------------------------------------------
 dat="${tmp}/Commands.dat"
@@ -86,7 +100,34 @@ check "the difficulty is the Mode command" "Mode Hard" "$(cat "${dat}")"
 out="$(cfg UNT_MODE=Insane commands "${dat}")"
 check "an unknown difficulty is not written" "Mode Hard" "$(cat "${dat}")"
 
+printf 'Password secret\nGSLT 0123456789abcdef0123456789ABCDEF\n' >"${dat}"
+out="$(cfg UNT_PASSWORD='new pass' UNT_GSLT=short commands "${dat}")"
+check "an invalid new password or token removes the old line instead of keeping it" "" "$(cat "${dat}" | tr -d '\n')"
+check "and both are reported" "2" "$(grep -c '^WARN' <<<"${out}")"
+
+printf 'Name Caf\xe9\nMaxPlayers 10\n' >"${dat}"
+cfg UNT_MAX_PLAYERS=20 commands "${dat}" >/dev/null
+check "a file that is not UTF-8 is still edited, its bytes kept" "$(printf 'Name Caf\xe9\nMaxPlayers 20')" "$(cat "${dat}")"
+
 check "usage" "64" "$(status python3 scripts/flux-config.py)"
+
+# --- Config.txt --------------------------------------------------------------------------------
+ct="${tmp}/Config.txt"
+printf '\xef\xbb\xbfVersion 1\r\n\r\nServer\r\n{\r\n\t// > Default: False\r\n\tEnable_Update_Shutdown\r\n}\r\n' >"${ct}"
+cfg config "${ct}" >/dev/null
+check "a bare Enable_Update_Shutdown becomes True, CRLF and BOM kept" "$(printf '\xef\xbb\xbfVersion 1\r\n\r\nServer\r\n{\r\n\t// > Default: False\r\n\tEnable_Update_Shutdown True\r\n}\r\n')" "$(cat "${ct}")"
+printf 'Server\n{\n\tEnable_Update_Shutdown False\n}\n' >"${ct}"
+cfg config "${ct}" >/dev/null
+check "the owner's False is kept" "$(printf 'Server\n{\n\tEnable_Update_Shutdown False\n}')" "$(cat "${ct}")"
+printf 'Browser\n{\n\tEnable_Update_Shutdown\n}\nServer\n{\n\tVAC_Secure\n}\n' >"${ct}"
+cfg config "${ct}" >/dev/null
+check "only the Server section's key; added when missing" "$(printf 'Browser\n{\n\tEnable_Update_Shutdown\n}\nServer\n{\n\tVAC_Secure\n\tEnable_Update_Shutdown True\n}')" "$(cat "${ct}")"
+rm -f "${ct}"
+cfg config "${ct}" >/dev/null
+check "a first start gets a file with only the setting" "$(printf 'Server\n{\n\tEnable_Update_Shutdown True\n}')" "$(cat "${ct}")"
+rm -f "${ct}"
+cfg FLUX_UPDATE_SHUTDOWN=false config "${ct}" >/dev/null
+check "FLUX_UPDATE_SHUTDOWN=false writes nothing" "1" "$(status test -e "${ct}")"
 
 # --- WorkshopDownloadConfig.json ---------------------------------------------------------------
 ws="${tmp}/WorkshopDownloadConfig.json"

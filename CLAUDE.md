@@ -48,7 +48,14 @@ A change to what the image does bumps `VERSION` and gets a line under "Versions"
   command line is swallowed into it (the previous image's `Default -port:27015 -sv` folder).
 - **There is no autosave in Unturned.** The autosaver and the stop path are the only saves.
 - **A refused GSLT hangs the server for good** ("no longer retrying", map never loads). The
-  watcher in the entrypoint is what turns that into a restart without the token.
+  watcher in the entrypoint is what turns that into a restart without the token. **Steam being
+  unreachable looks similar** (`k_EResultNoConnection, still retrying`): never treat it as a
+  refusal, or a valid token is dropped for good.
+- **Unturned does not save on SIGTERM.** Stop it through the console (`shutdown`), always.
+- **Control characters in a console command act on the pty**: Ctrl-C quits the server, Ctrl-\\
+  kills it unsaved. `flux_console_line` strips them.
+- **Modules/ is in the install (`ml:`, local).** Rocket is copied in on every start; anything a
+  customer puts there by hand disappears on a move. Plugins live in `Servers/<id>/Rocket` (data).
 - **Flux stops a container with Docker's default 10 seconds.** Console shutdown measured 2.4 s.
 - **The unit tests run with the machine's Python, not the image's.** Anything a script newly needs
   gets a check in `tests/image/in-container.sh`.
