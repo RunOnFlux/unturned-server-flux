@@ -156,5 +156,13 @@ check "and the log says why" "0" "$(status grep -q 'Steam refused' /tmp/sup2.log
 kill -TERM "${sup}"
 wait "${sup}"
 
+# --- flux.log is local; the banner ----------------------------------------------------------------
+fl_srv=/tmp/srv
+check "flux.log is on the install volume" "0" "$(status test -s "${fl_srv}/flux-logs/flux.log")"
+check "and not on the synced data volume" "1" "$(status test -e "/tmp/data/flux/flux.log")"
+check "the banner is in the container output" "0" "$(status grep -q 'Unturned server image by FluxCloud - https://runonflux.com' /tmp/sup.log)"
+check "and in flux.log" "0" "$(status grep -q 'Host this and 30+ other games in one click: https://runonflux.com/games' "${fl_srv}/flux-logs/flux.log")"
+check "at the container start and again for each generation" "1" "$([ "$(grep -c 'server image by FluxCloud' /tmp/sup.log)" -ge 2 ] && echo 1 || echo 0)"
+
 printf '%s passed, %s failed\n' "${pass}" "${fail}"
 [ "${fail}" = "0" ]

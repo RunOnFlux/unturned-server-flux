@@ -81,8 +81,8 @@ down through its console (a signal would not save).
 
 | Path | What | On Flux |
 |---|---|---|
-| `/mnt/unturned/server` | The install, about 2 GB. Disposable: SteamCMD rebuilds it | `ml:` (local, never synced) |
-| `/mnt/unturned/data` | The install's `Servers/` folder (a symlink points here): `Default/Server/Commands.dat`, `Default/Config.txt`, the world, `Default/WorkshopDownloadConfig.json`, and `flux/` (our log, a copy of each game log) | primary, `g:` |
+| `/mnt/unturned/server` | The install, about 2 GB. Disposable: SteamCMD rebuilds it. Also `flux-logs/flux.log` (our supervisor log, 5 MB then one `.1`): local, never synced | `ml:` (local, never synced) |
+| `/mnt/unturned/data` | The install's `Servers/` folder (a symlink points here): `Default/Server/Commands.dat`, `Default/Config.txt`, the world, `Default/WorkshopDownloadConfig.json`, and `flux/` (a copy of each game log) | primary, `g:` |
 | `/mnt/unturned/data/Default/Workshop/Steam` | Workshop downloads. Downloaded again on a new node | `ml:` |
 
 An install that already has servers in its own `Servers/` folder has them moved onto the data
@@ -131,6 +131,7 @@ between a bad build and every server.
 
 ## Versions
 
+- **1.2.2** (2026-10-20): `flux.log` moved off the synced data volume to `/mnt/unturned/server/flux-logs/flux.log` (5 MB, one `.1`; an old one is moved there once); start-up banner; the weekly rebuild only when it has something to apply (new script `.github/ci/needs-rebuild.sh`).
 - **1.2.1** (2026-10-09): `flux-console` runs one command at a time (a lock over the command and
   its answer), and the autosaver and backups go through it: two commands at once printed both
   answers.

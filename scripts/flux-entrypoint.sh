@@ -37,7 +37,10 @@ s="${FLUX_SERVER_DIR}"
 d="${FLUX_DATA_DIR}"
 
 rm -f "${FLUX_RESTART_MARKER}"
-mkdir -p "${s}" "${d}" "$(dirname "${FLUX_LOG}")" "${FLUX_GAME_LOG_DIR}"
+mkdir -p "${s}" "${d}" "${d}/flux" "$(dirname "${FLUX_LOG}")" "${FLUX_GAME_LOG_DIR}"
+# An older image kept flux.log on the synced data volume: move it here, once.
+flux_log_migrate "${FLUX_DATA_DIR}/flux/flux.log"
+flux_banner "Unturned"
 
 if ! flux_valid_server_id "${FLUX_SERVER_ID}"; then
   flux_log "ERROR FLUX_SERVER_ID='${FLUX_SERVER_ID}' is not one plain word; refusing to start"
@@ -277,6 +280,7 @@ start_generation() {
 
   log_file="${FLUX_GAME_LOG_DIR}/$(date +%Y%m%d-%H%M%S)-server.log"
   : >"${log_file}"
+  flux_banner "Unturned"
   flux_log "starting the server (generation ${generation}), log ${log_file}"
 
   # THE GAME'S OWN LOG, Logs/Server_<id>.log in the install: it is where the server writes

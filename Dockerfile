@@ -5,7 +5,12 @@
 # Workshop list from the environment (the server takes its name, map, player limit, password,
 # port and Game Server Login Token from nowhere else), saves the world on a timer and on stop
 # (Unturned has no autosave of its own), and restarts the server in place. See README.md.
-FROM steamcmd/steamcmd:ubuntu-24
+#
+# The base. CI builds it pinned to the digest it resolved and records that digest in the
+# org.opencontainers.image.base.digest label, which the scheduled check compares against
+# (.github/ci/needs-rebuild.sh).
+ARG BASE_IMAGE=steamcmd/steamcmd:ubuntu-24
+FROM ${BASE_IMAGE}
 
 ARG DEBIAN_FRONTEND=noninteractive
 ARG FLUX_IMAGE_VERSION=dev
@@ -13,6 +18,7 @@ ARG FLUX_IMAGE_VERSION=dev
 # python3, NOT python3-minimal: flux-config.py needs json. tests/test-image.sh runs the scripts
 # inside the image. The rest is what the Unity headless player loads.
 RUN apt-get update -y && \
+    apt-get upgrade -y --no-install-recommends && \
     apt-get install -y --no-install-recommends \
         ca-certificates curl procps tzdata python3 libgdiplus && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
