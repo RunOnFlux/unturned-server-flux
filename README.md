@@ -131,6 +131,7 @@ between a bad build and every server.
 
 ## Versions
 
+- **1.2.3** (2026-11-25): SteamCMD: the depotcache lives on the install volume; `state is 0x6` (any exit code) is not retried: one fresh install over the top (the old build's record is put back if it fails), then the installed build starts, and a `docker stop` during a download or the pause between attempts ends the container with 0 (it ended with 42).
 - **1.2.2** (2026-10-20): `flux.log` moved off the synced data volume to `/mnt/unturned/server/flux-logs/flux.log` (5 MB, one `.1`; an old one is moved there once); start-up banner; the weekly rebuild only when it has something to apply (new script `.github/ci/needs-rebuild.sh`).
 - **1.2.1** (2026-10-09): `flux-console` runs one command at a time (a lock over the command and
   its answer), and the autosaver and backups go through it: two commands at once printed both
