@@ -156,6 +156,60 @@ check "and the log says why" "0" "$(status grep -q 'Steam refused' /tmp/sup2.log
 kill -TERM "${sup}"
 wait "${sup}"
 
+# --- SteamCMD: the depotcache, "state is 0x6", and a stop while it works --------------------------
+check "the depotcache is on the install volume" "/tmp/srv/flux-steam/depotcache" "$(readlink "${HOME:-/root}/.local/share/Steam/depotcache")"
+acf=/tmp/srv/steamapps/appmanifest_1110390.acf
+mkdir -p /tmp/srv/steamapps
+printf '"AppState" { "buildid" "1" }\n' >"${acf}"
+# Steam keeps refusing: one fresh-install attempt, then the installed build starts and its record is back.
+printf '#!/bin/bash\necho call >>/tmp/steamcmd-calls\necho "Error! App 1110390 state is 0x6 after update job."\nexit 0\n' >/usr/local/bin/steamcmd
+: >/tmp/steamcmd-calls
+/opt/flux/flux-entrypoint.sh >/tmp/sup3.log 2>&1 &
+sup=$!
+check "a 0x6 (exit 0) starts the installed build" "0" "$(status wait_for "grep -q 'starting the server (generation 1)' /tmp/sup3.log" 30)"
+check "after one fresh-install attempt, two steamcmd calls" "2" "$(wc -l </tmp/steamcmd-calls)"
+check "and says why" "0" "$(status grep -q 'state is 0x6' /tmp/sup3.log)"
+check "the installed build's record is back" "0" "$(status test -f "${acf}")"
+check "and no further retries" "1" "$(status grep -q 'attempt 2/5' /tmp/sup3.log)"
+kill -TERM "${sup}"
+wait "${sup}"
+check "a stop of that server exits 0" "0" "$?"
+
+# Steam refuses the old manifests until the record is gone: the fresh install gets through.
+printf '#!/bin/bash\necho call >>/tmp/steamcmd-calls\nif [ -f %s ]; then echo "Error! state is 0x6 after update job."; exit 0; fi\nprintf \x27"AppState" { "buildid" "2" }\\n\x27 >%s\nexit 0\n' "${acf}" "${acf}" >/usr/local/bin/steamcmd
+: >/tmp/steamcmd-calls
+/opt/flux/flux-entrypoint.sh >/tmp/sup3b.log 2>&1 &
+sup=$!
+check "a fresh install gets past a 0x6" "0" "$(status wait_for "grep -q 'starting the server (generation 1)' /tmp/sup3b.log" 30)"
+check "in two steamcmd calls" "2" "$(wc -l </tmp/steamcmd-calls)"
+check "saying it updates as a new install" "0" "$(status grep -q 'updating as a new install' /tmp/sup3b.log)"
+check "the new build's record is kept" "2" "$(grep -o '"buildid" "[0-9]*"' "${acf}" | tr -dc '0-9')"
+check "and the old record is not left behind" "1" "$(status test -f "${acf}.pre-fresh")"
+kill -TERM "${sup}"
+wait "${sup}"
+
+# A stop while SteamCMD downloads: exit 0, not 42 ("could not be prepared").
+printf '#!/bin/bash\necho call >>/tmp/steamcmd-calls\nsleep 300\n' >/usr/local/bin/steamcmd
+: >/tmp/steamcmd-calls
+/opt/flux/flux-entrypoint.sh >/tmp/sup4.log 2>&1 &
+sup=$!
+wait_for '[ -s /tmp/steamcmd-calls ]' 20
+kill -TERM "${sup}"
+wait "${sup}"
+check "a stop during the download exits 0" "0" "$?"
+check "and is a stop, not a failure" "0" "$(status grep -q 'stopped on request before the server started' /tmp/sup4.log)"
+
+# A stop during the pause between two failed attempts: no new download.
+printf '#!/bin/bash\necho call >>/tmp/steamcmd-calls\necho "Error! boom"\nexit 1\n' >/usr/local/bin/steamcmd
+: >/tmp/steamcmd-calls
+/opt/flux/flux-entrypoint.sh >/tmp/sup5.log 2>&1 &
+sup=$!
+wait_for 'grep -q "attempt 1/5" /tmp/sup5.log' 20
+kill -TERM "${sup}"
+wait "${sup}"
+check "a stop during the retry pause exits 0" "0" "$?"
+check "and no second download starts" "1" "$(wc -l </tmp/steamcmd-calls)"
+
 # --- flux.log is local; the banner ----------------------------------------------------------------
 fl_srv=/tmp/srv
 check "flux.log is on the install volume" "0" "$(status test -s "${fl_srv}/flux-logs/flux.log")"
